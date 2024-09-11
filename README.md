@@ -17,7 +17,7 @@ brew install hashicorp/tap/packer
 brew install cirruslabs/cli/tart
 brew install python3
 tart pull tart pull ghcr.io/cirruslabs/macos-sonoma-xcode:latest
-git clone https://github.com/reaperhulk/cidermill.git
+git clone https://github.com/alvicsam/cidermill.git
 cd cidermill
 ssh-keygen -t rsa -b 4096 -C "macrunner@local" -f id_rsa
 cp id_rsa.pub vm-build/runner_authorized_keys
