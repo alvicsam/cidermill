@@ -12,10 +12,11 @@ variable "name" {
 }
 
 source "tart-cli" "tart" {
-  vm_base_name = "ghcr.io/cirruslabs/macos-sonoma-base:latest"
+  vm_base_name = "ghcr.io/cirruslabs/macos-sonoma-xcode:latest"
   vm_name      = "${var.name}"
   cpu_count    = 4
   memory_gb    = 8
+  disk_size_gb = 150
   headless     = true
   ssh_password = "admin"
   ssh_username = "admin"
@@ -42,25 +43,4 @@ build {
       "chmod -R 700 ~/.ssh",
     ]
   }
-
-  //install rust
-  provisioner "shell" {
-    inline = [
-      "source ~/.zprofile",
-      "brew install rustup-init",
-      "rustup-init -y",
-    ]
-  }
-
-  //create a /Users/runner to trick GH into installing things in the toolcache
-  //this makes setup-python work. the right fix is to rename the user, but
-  //that's more work.
-  provisioner "shell" {
-    inline = [
-      "sudo mkdir /Users/runner",
-      "sudo chown admin:staff /Users/runner",
-      "sudo chmod 750 /Users/runner",
-    ]
-  }
-
 }

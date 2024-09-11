@@ -6,6 +6,38 @@ This project orchestrates ephemeral runners for GHA on macOS arm64 using [tart](
 * A GitHub application that has permissions to create runners. No tutorial here right now folks, sorry.
 * Python 3.7+
 
+## tl;dr
+
+```bash
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+(echo; echo 'eval "$(/opt/homebrew/bin/brew shellenv)"') >> /Users/administrator/.zprofile
+eval "$(/opt/homebrew/bin/brew shellenv)"
+brew tap hashicorp/tap
+brew install hashicorp/tap/packer
+brew install cirruslabs/cli/tart
+brew install python3
+tart pull tart pull ghcr.io/cirruslabs/macos-sonoma-xcode:latest
+git clone https://github.com/reaperhulk/cidermill.git
+cd cidermill
+ssh-keygen -t rsa -b 4096 -C "macrunner@local" -f id_rsa
+cp id_rsa.pub vm-build/runner_authorized_keys
+cd vm-build
+#change base image in vm-build/runner.pkr.hcl
+packer init runner.pkr.hcl
+packer build -var name=macrunner runner.pkr.hcl
+cd ..
+curl -O -L https://github.com/actions/runner/releases/download/v2.319.1/actions-runner-osx-arm64-2.319.1.tar.gz
+mv actions-runner-osx-arm64-2.319.1.tar.gz actions-runner.tar.gz
+cp config.toml.example config.toml
+# add settings to config.toml
+python3 -m venv venv && venv/bin/pip install -r requirements.txt
+./svc.sh install
+./svc.sh start
+
+#debug launchd
+brew install --cask launchcontrol
+```
+
 ## Setup and installation
 Run all this on the machine that will be hosting the VMs of course.
 

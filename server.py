@@ -68,8 +68,8 @@ async def get_registration_token(config: typing.Dict) -> str:
         response_data = res.json()
         endpoint_token = response_data["token"]
         res = await client.post(
-            f"https://api.github.com/repos/"
-            f"{config['repository']}/actions/runners/registration-token",
+            f"https://api.github.com/orgs/"
+            f"{config['org']}/actions/runners/registration-token",
             headers={
                 "Accept": "application/vnd.github.v3+json",
                 "Authorization": f"Bearer {endpoint_token}",
@@ -149,6 +149,8 @@ async def scp_actions_runner(config: typing.Dict, ip: str) -> None:
     await trio.run_process(
         [
             "scp",
+            "-i",
+            "./id_rsa",
             "-o",
             "StrictHostKeyChecking=no",
             "-o",
@@ -199,13 +201,15 @@ async def run_runner_then_cancel(config: typing.Dict, runner_name: str, cancel_s
                     trio.run_process,
                     [
                         "ssh",
+                        "-i",
+                        "./id_rsa",
                         "-o",
                         "StrictHostKeyChecking=no",
                         "-o",
                         "UserKnownHostsFile=/dev/null",
                         f"{config['user']}@{ip}",
                         f"~/runner-launcher.sh {token} "
-                        f"{runner_name} https://github.com/{config['repository']} "
+                        f"{runner_name} https://github.com/{config['org']} "
                         f"{config['labels']}",
                     ],
                     check=False,
