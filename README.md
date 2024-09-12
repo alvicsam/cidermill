@@ -45,6 +45,9 @@ python3 -m venv venv && venv/bin/pip install -r requirements.txt
 
 #debug launchd if needed
 brew install --cask launchcontrol
+
+# ssh to current running VM
+ssh -i cidermill/id_rsa -o StrictHostKeyChecking=no  admin@$(tart ip $(tart list | grep running | awk '{print $2}'))
 ```
 
 ## Setup and installation
