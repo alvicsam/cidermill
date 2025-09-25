@@ -29,7 +29,7 @@ build {
   // Install SSH key DO NOT DELETE
   provisioner "shell" {
     inline = [
-      "mkdir ~/.ssh",
+      "mkdir -p ~/.ssh",
     ]
   }
   // Install SSH key DO NOT DELETE
