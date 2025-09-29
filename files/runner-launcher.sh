@@ -10,7 +10,10 @@ if [[ -n "$4" ]]; then
     LABELS="--labels ${4}"
 fi
 
-tar zxf actions-runner.tar.gz
+rm -rf ~/actions-runner
+mkdir -p ~/actions-runner
+
+tar -zxf actions-runner.tar.gz -C ~/actions-runner
 
 sudo scutil --set HostName $NAME
 sudo scutil --set ComputerName $NAME
