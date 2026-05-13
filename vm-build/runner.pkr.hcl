@@ -12,7 +12,7 @@ variable "name" {
 }
 
 source "tart-cli" "tart" {
-  vm_base_name = "ghcr.io/cirruslabs/macos-sonoma-xcode:latest"
+  vm_base_name = "ghcr.io/cirruslabs/macos-tahoe-xcode:latest"
   vm_name      = "${var.name}"
   cpu_count    = 4
   memory_gb    = 8
