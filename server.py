@@ -146,16 +146,62 @@ async def startup_checks() -> None:
         sys.exit(1)
 
 
-async def wait_for_ssh(config: typing.Dict, ip: str, timeout: int = 180) -> None:
+async def describe_network(runner_name: str, ip: str) -> None:
+    """Log where an unreachable address came from.
+
+    "tart ip" reads /var/db/dhcpd_leases. That file keeps entries for VMs that
+    are long deleted, so the address it returns can belong to nothing. The ARP
+    table lists the addresses that answer right now. When the two disagree,
+    the lease is stale and the VM is innocent.
+    """
+    probes = (
+        (["tart", "list"], None),
+        (["tart", "ip", runner_name, "--wait", "1"], None),
+        (["arp", "-an"], "192.168.64."),
+        (["cat", "/var/db/dhcpd_leases"], None),
+    )
+    log(f"Collecting network state for {runner_name} at {ip}")
+    for cmd, keep in probes:
+        try:
+            result = await trio.run_process(
+                cmd, capture_stdout=True, capture_stderr=True, check=False
+            )
+            out = result.stdout.decode("utf-8", "replace")
+            err = result.stderr.decode("utf-8", "replace").strip()
+            lines = [ln for ln in out.splitlines() if keep is None or keep in ln]
+            out = "\n".join(lines).strip() or err or "(no output)"
+        except Exception as e:
+            out = f"failed to run: {e}"
+        log(f"--- {' '.join(cmd)} ---")
+        log(out)
+
+
+def ssh_error(exc: subprocess.CalledProcessError) -> str:
+    """The last non-empty line of ssh's stderr. That line carries the reason."""
+    raw = (exc.stderr or b"").decode("utf-8", "replace")
+    lines = [line.strip() for line in raw.splitlines() if line.strip()]
+    return lines[-1] if lines else f"exit status {exc.returncode}"
+
+
+async def wait_for_ssh(
+    config: typing.Dict, runner_name: str, ip: str, timeout: int = 20
+) -> None:
     """Block until the guest accepts an ssh connection.
 
-    "tart ip" returns as soon as the VM takes a DHCP lease. sshd starts
-    several seconds after that, and later still on a loaded host. The copy
-    below used to race that gap and fail with ssh exit status 255.
+    Two things make the address unusable at this point. sshd starts several
+    seconds after the VM takes its DHCP lease, which "tart ip" reports. And
+    "tart ip" reads a lease file that holds stale entries, so the address can
+    belong to a VM that is already gone.
+
+    Report every probe, and give up fast. The caller kills the VM and clones a
+    new one, which beats waiting out an address that will never answer.
     """
-    log(f"Waiting for sshd on {ip}")
-    deadline = trio.current_time() + timeout
+    log(f"Waiting for sshd on {ip}, giving up after {timeout} seconds")
+    start = trio.current_time()
+    deadline = start + timeout
+    attempt = 0
     while True:
+        attempt += 1
         try:
             await trio.run_process(
                 [
@@ -176,13 +222,21 @@ async def wait_for_ssh(config: typing.Dict, ip: str, timeout: int = 180) -> None
                 capture_stdout=True,
                 capture_stderr=True,
             )
-            log(f"sshd is up on {ip}")
-            return
-        except subprocess.CalledProcessError:
+        except subprocess.CalledProcessError as e:
+            elapsed = trio.current_time() - start
+            reason = ssh_error(e)
+            log(f"  {ip} attempt {attempt} at {elapsed:.0f}s: {reason}")
             if trio.current_time() >= deadline:
-                log(f"sshd did not come up on {ip} in {timeout} seconds")
-                raise
-            await trio.sleep(2)
+                await describe_network(runner_name, ip)
+                raise RuntimeError(
+                    f"sshd did not answer on {ip} in {timeout} seconds, "
+                    f"{attempt} attempts, last reason: {reason}"
+                ) from e
+            await trio.sleep(1)
+        else:
+            elapsed = trio.current_time() - start
+            log(f"sshd answered on {ip} after {attempt} attempts, {elapsed:.0f}s")
+            return
 
 
 async def scp_actions_runner(config: typing.Dict, ip: str) -> None:
@@ -204,6 +258,29 @@ async def scp_actions_runner(config: typing.Dict, ip: str) -> None:
         capture_stderr=True,
     )
     log("Copied files to VM")
+
+
+def log_exception(e: BaseException, indent: str = "") -> None:
+    """Log an exception, or every leaf of a group of them.
+
+    trio puts nursery failures in a group, and a group stringifies to a count
+    of its members. CalledProcessError stringifies to the command and the exit
+    status. Both drop the reason, which sits in the leaves and in the captured
+    stderr. "exceptions" covers trio.MultiError and ExceptionGroup alike, so
+    this needs no version test.
+    """
+    log(f"{indent}{type(e).__name__}: {e}")
+    nested = getattr(e, "exceptions", None)
+    if nested:
+        for sub in nested:
+            log_exception(sub, indent + "  ")
+        return
+    stderr = getattr(e, "stderr", None)
+    if isinstance(stderr, bytes):
+        stderr = stderr.decode("utf-8", "replace")
+    if stderr and stderr.strip():
+        pad = indent + "  "
+        log(pad + stderr.strip().replace("\n", "\n" + pad))
 
 
 async def signal_handler():
@@ -234,7 +311,7 @@ async def run_runner_then_cancel(config: typing.Dict, runner_name: str, cancel_s
     try:
         async with trio.open_nursery() as nursery:
             ip = await get_tart_ip(runner_name, 4)
-            await wait_for_ssh(config, ip)
+            await wait_for_ssh(config, runner_name, ip)
             await scp_actions_runner(config, ip)
             token = await get_registration_token(config)
             log("Launching runner...")
@@ -296,15 +373,14 @@ async def main(config: typing.Dict):
                 retries = 0
             except Exception as e:
                 log("Exception propagated to top level, restarting runner.")
-                log(e)
-                # CalledProcessError stringifies to the command and the exit
-                # status only. The reason sits in the captured stderr.
-                stderr = getattr(e, "stderr", None)
-                if stderr:
-                    log(stderr.decode("utf-8", "replace").strip())
+                log_exception(e)
                 retries += 1
-                log(f"Sleeping {2 ** retries} seconds before retrying")
-                await trio.sleep(2 ** retries)
+                # Uncapped, the eighth failure in a row sleeps for four
+                # minutes and the twelfth for over an hour. The host goes
+                # quiet exactly when someone is watching it.
+                delay = min(2**retries, 60)
+                log(f"Sleeping {delay} seconds before retrying")
+                await trio.sleep(delay)
                 continue
 
     async with trio.open_nursery() as nursery:
