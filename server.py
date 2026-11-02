@@ -1,8 +1,10 @@
 import binascii
 import codecs
 import datetime
+import errno
 import os
 import signal
+import socket
 import subprocess
 import sys
 import textwrap
@@ -129,6 +131,47 @@ async def get_tart_ip(runner_name: str, retries: int) -> str:
     raise RuntimeError(f"{runner_name} took no DHCP lease after {retries} attempts")
 
 
+def check_local_network() -> None:
+    """Refuse to start when macOS has not granted local network access.
+
+    From macOS 15 on, a process needs consent before it may reach an address
+    on the local network. A LaunchAgent cannot show the consent dialog, so it
+    is denied in silence. Every ssh to a VM then fails with EHOSTUNREACH,
+    which ssh prints as "No route to host", while ping keeps working because
+    ICMP is not behind the gate. That combination sends you hunting the VM,
+    and the VM is fine.
+
+    A send to the mDNS multicast group needs no listener on the other end and
+    is refused the same way when the grant is missing, so this costs one
+    datagram and no setup.
+    """
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        sock.sendto(b"", ("224.0.0.251", 5353))
+    except OSError as e:
+        if e.errno not in (errno.EHOSTUNREACH, errno.EPERM, errno.EACCES):
+            # Anything else is not this problem. Say so and carry on rather
+            # than blocking startup on a check that is only advisory.
+            log(f"Local network check was inconclusive: {e}")
+            return
+        log(
+            "Local network access is denied for this process.\n"
+            "\n"
+            "macOS will not let it reach the VMs on 192.168.64.0/24, so every\n"
+            'copy to a VM would fail with "No route to host".\n'
+            "\n"
+            "Open System Settings, Privacy & Security, Local Network, and\n"
+            "switch on the entry for python. The entry only appears once this\n"
+            "process has tried to reach a local address, which it just did.\n"
+            "Then restart this agent:\n"
+            "\n"
+            "    launchctl kickstart -k gui/$(id -u)/cidermill\n"
+        )
+        sys.exit(1)
+    finally:
+        sock.close()
+
+
 async def startup_checks() -> None:
     try:
         await trio.run_process(
@@ -144,6 +187,8 @@ async def startup_checks() -> None:
     if not os.path.isfile(os.path.join(BASE_DIR, "actions-runner.tar.gz")):
         log("Could not find actions-runner.tar.gz. Check the readme.")
         sys.exit(1)
+
+    check_local_network()
 
 
 async def describe_network(runner_name: str, ip: str) -> None:
