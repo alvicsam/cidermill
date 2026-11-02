@@ -120,11 +120,13 @@ async def get_tart_ip(runner_name: str, retries: int) -> str:
                 capture_stdout=True,
                 capture_stderr=True,
             )
-            break
+            return result.stdout.decode("ascii").strip()
         except subprocess.CalledProcessError:
             attempts += 1
             continue
-    return result.stdout.decode("ascii").strip()
+    # Without this the loop falls out with "result" unbound, and the caller
+    # gets an UnboundLocalError instead of the real problem.
+    raise RuntimeError(f"{runner_name} took no DHCP lease after {retries} attempts")
 
 
 async def startup_checks() -> None:
@@ -142,6 +144,45 @@ async def startup_checks() -> None:
     if not os.path.isfile(os.path.join(BASE_DIR, "actions-runner.tar.gz")):
         log("Could not find actions-runner.tar.gz. Check the readme.")
         sys.exit(1)
+
+
+async def wait_for_ssh(config: typing.Dict, ip: str, timeout: int = 180) -> None:
+    """Block until the guest accepts an ssh connection.
+
+    "tart ip" returns as soon as the VM takes a DHCP lease. sshd starts
+    several seconds after that, and later still on a loaded host. The copy
+    below used to race that gap and fail with ssh exit status 255.
+    """
+    log(f"Waiting for sshd on {ip}")
+    deadline = trio.current_time() + timeout
+    while True:
+        try:
+            await trio.run_process(
+                [
+                    "ssh",
+                    "-i",
+                    "./id_rsa",
+                    "-o",
+                    "StrictHostKeyChecking=no",
+                    "-o",
+                    "UserKnownHostsFile=/dev/null",
+                    "-o",
+                    "BatchMode=yes",
+                    "-o",
+                    "ConnectTimeout=5",
+                    f"{config['user']}@{ip}",
+                    "true",
+                ],
+                capture_stdout=True,
+                capture_stderr=True,
+            )
+            log(f"sshd is up on {ip}")
+            return
+        except subprocess.CalledProcessError:
+            if trio.current_time() >= deadline:
+                log(f"sshd did not come up on {ip} in {timeout} seconds")
+                raise
+            await trio.sleep(2)
 
 
 async def scp_actions_runner(config: typing.Dict, ip: str) -> None:
@@ -193,6 +234,7 @@ async def run_runner_then_cancel(config: typing.Dict, runner_name: str, cancel_s
     try:
         async with trio.open_nursery() as nursery:
             ip = await get_tart_ip(runner_name, 4)
+            await wait_for_ssh(config, ip)
             await scp_actions_runner(config, ip)
             token = await get_registration_token(config)
             log("Launching runner...")
@@ -255,6 +297,11 @@ async def main(config: typing.Dict):
             except Exception as e:
                 log("Exception propagated to top level, restarting runner.")
                 log(e)
+                # CalledProcessError stringifies to the command and the exit
+                # status only. The reason sits in the captured stderr.
+                stderr = getattr(e, "stderr", None)
+                if stderr:
+                    log(stderr.decode("utf-8", "replace").strip())
                 retries += 1
                 log(f"Sleeping {2 ** retries} seconds before retrying")
                 await trio.sleep(2 ** retries)
