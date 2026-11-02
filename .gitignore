@@ -3,3 +3,4 @@ config.toml
 .path
 .DS_Store
 private.pem
+__pycache__/
